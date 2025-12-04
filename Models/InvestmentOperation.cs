@@ -1,4 +1,4 @@
-﻿namespace InvestmentApi.Models
+namespace InvestmentApi.Models
 {
     public class InvestmentOperation
     {
@@ -11,5 +11,9 @@
 
         
         public decimal TotalCost => (Quantity * PurchasePricePerShare) + Commission;
+        public string NotificationEmail { get; set; }
+        // Новые поля для отслеживания срабатывания триггера
+        public bool TriggerActivated { get; set; }
+        public DateTime? TriggerActivatedAt { get; set; }
     }
 }
