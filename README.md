@@ -70,6 +70,9 @@ Investment Portfolio API
 5.2. Сервис развернут в облачной платформе Amvera по адресу:
 http://prrr444-daniil465346.amvera.io/
 
+5.3. Функциональный интерфейс на Netlify:
+https://696d698a7e28000008417e07--heartfelt-sawine-010796.netlify.app/
+
 ## 6. Пример использования
 
 ### Расчет стоимости операции:
