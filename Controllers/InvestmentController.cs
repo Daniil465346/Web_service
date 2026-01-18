@@ -1,8 +1,7 @@
 using Microsoft.AspNetCore.Mvc;
 using InvestmentApi.Models;
 using System.Timers;
-using System.Threading.Tasks;
-using System.Linq;
+using Timer = System.Timers.Timer;
 
 namespace InvestmentApi.Controllers
 {
@@ -10,194 +9,163 @@ namespace InvestmentApi.Controllers
     [Route("api/[controller]")]
     public class InvestmentController : ControllerBase
     {
-        private static List<Security> _securities = new List<Security>
+        private static readonly List<Security> _securities = new()
         {
-            new Security
-            {
-                Id = 1,
-                Ticker = "AAPL",
-                Name = "Apple Inc.",
-                CurrentPrice = 170.0m,
-                BasePrice = 170.0m,
-                MinPrice = 150.0m,
-                MaxPrice = 190.0m,
-                PriceChangeRange = 5.0m
-            },
-            new Security
-            {
-                Id = 2,
-                Ticker = "GAZP",
-                Name = "Газпром",
-                CurrentPrice = 160.0m,
-                BasePrice = 160.0m,
-                MinPrice = 140.0m,
-                MaxPrice = 180.0m,
-                PriceChangeRange = 3.0m
-            },
-            new Security
-            {
-                Id = 3,
-                Ticker = "TSLA",
-                Name = "Tesla Inc.",
-                CurrentPrice = 250.0m,
-                BasePrice = 250.0m,
-                MinPrice = 220.0m,
-                MaxPrice = 280.0m,
-                PriceChangeRange = 8.0m
-            }
+            new() { Id = 1, Ticker = "AAPL", Name = "Apple Inc.", CurrentPrice = 170.0m, BasePrice = 170.0m, MinPrice = 150.0m, MaxPrice = 190.0m, PriceChangeRange = 5.0m },
+            new() { Id = 2, Ticker = "GAZP", Name = "Газпром", CurrentPrice = 160.0m, BasePrice = 160.0m, MinPrice = 140.0m, MaxPrice = 180.0m, PriceChangeRange = 3.0m },
+            new() { Id = 3, Ticker = "TSLA", Name = "Tesla Inc.", CurrentPrice = 250.0m, BasePrice = 250.0m, MinPrice = 220.0m, MaxPrice = 280.0m, PriceChangeRange = 8.0m }
         };
 
-        private static List<InvestmentOperation> _operations = new List<InvestmentOperation>();
-        private static List<TriggerHistory> _triggerHistory = new List<TriggerHistory>();
-        private static System.Timers.Timer _priceUpdateTimer;
-        private static readonly Random _random = new Random();
+        private static readonly List<InvestmentOperation> _operations = new();
+        private static readonly List<TriggerHistory> _triggerHistory = new();
+        private static readonly Random _random = new();
+
+        // Статический таймер
+        private static Timer? _priceUpdateTimer;
+        private static bool _timerInitialized = false;
+        private static readonly object _timerLock = new object();
+
+        public class TriggerHistory
+        {
+            public int OperationId { get; set; }
+            public int SecurityId { get; set; }
+            public string SecurityTicker { get; set; } = string.Empty;
+            public decimal TriggeredPrice { get; set; }
+            public decimal TargetPrice { get; set; }
+            public DateTime TriggeredAt { get; set; }
+            public bool IsProcessed { get; set; } = false;
+        }
 
         public InvestmentController()
         {
-            // Запускаем таймер для изменения цен каждые 30 секунд
-            if (_priceUpdateTimer == null)
-            {
-                _priceUpdateTimer = new System.Timers.Timer(30000);
-                _priceUpdateTimer.Elapsed += UpdatePrices;
-                _priceUpdateTimer.AutoReset = true;
-                _priceUpdateTimer.Enabled = true;
-                Console.WriteLine(" Таймер обновления цен запущен (каждые 30 секунд)");
-            }
+            InitializeTimer();
         }
 
-        // Метод для обновления цен
-        private void UpdatePrices(object sender, ElapsedEventArgs e)
+        private static void InitializeTimer()
         {
-            lock (_securities)
+            lock (_timerLock)
             {
-                foreach (var security in _securities)
+                if (!_timerInitialized)
                 {
-                    decimal change = (decimal)((_random.NextDouble() * 2 - 1) * (double)security.PriceChangeRange);
-                    decimal newPrice = security.CurrentPrice + change;
-                    newPrice = Math.Max(security.MinPrice, Math.Min(security.MaxPrice, newPrice));
-                    security.CurrentPrice = Math.Round(newPrice, 2);
+                    _priceUpdateTimer = new Timer(30000); // 30 секунд
+                    _priceUpdateTimer.Elapsed += UpdatePrices;
+                    _priceUpdateTimer.AutoReset = true;
+                    _priceUpdateTimer.Enabled = true;
+                    _timerInitialized = true;
+
+                    Console.WriteLine("Таймер обновления цен запущен (каждые 30 секунд)");
+
+                    // Запускаем первое обновление сразу
+                    Task.Run(() => UpdatePrices(null, null));
                 }
-
-                Console.WriteLine($" Цены обновлены: AAPL=${_securities[0].CurrentPrice}, GAZP=${_securities[1].CurrentPrice}, TSLA=${_securities[2].CurrentPrice}");
-
-                // Проверяем триггеры при изменении цен
-                Task.Run(() => CheckTriggersOnPriceChange());
             }
         }
 
-        // Метод для автоматической проверки триггеров при изменении цен
-        private async Task CheckTriggersOnPriceChange()
+        private static void UpdatePrices(object? sender, ElapsedEventArgs? e)
         {
-            var newlyActivatedTriggers = new List<object>();
-
-            foreach (var operation in _operations.Where(op => op.TargetBuyPrice.HasValue))
+            try
             {
-                bool alreadyTriggered = _triggerHistory.Any(th => th.OperationId == operation.Id);
-                if (alreadyTriggered) continue;
-
-                var security = _securities.FirstOrDefault(s => s.Id == operation.SecurityId);
-                if (security != null && security.CurrentPrice <= operation.TargetBuyPrice.Value)
+                lock (_securities)
                 {
-                    _triggerHistory.Add(new TriggerHistory
+                    _securities.ForEach(s =>
+                        s.CurrentPrice = Math.Round(Math.Max(s.MinPrice,
+                            Math.Min(s.MaxPrice, s.CurrentPrice + (decimal)((_random.NextDouble() * 2 - 1) * (double)s.PriceChangeRange))), 2));
+
+                    Console.WriteLine($"Цены обновлены: {string.Join(", ", _securities.Select(s => $"{s.Ticker}=${s.CurrentPrice}"))}");
+                    CheckTriggers();
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Ошибка при обновлении цен: {ex.Message}");
+            }
+        }
+
+        private static void CheckTriggers()
+        {
+            try
+            {
+                var newTriggers = _operations
+                    .Where(op => op.TargetBuyPrice.HasValue && !_triggerHistory.Any(th => th.OperationId == op.Id))
+                    .Select(op => (op, security: _securities.FirstOrDefault(s => s.Id == op.SecurityId)))
+                    .Where(t => t.security?.CurrentPrice <= t.op.TargetBuyPrice)
+                    .Select(t => new TriggerHistory
                     {
-                        OperationId = operation.Id,
-                        SecurityId = operation.SecurityId,
-                        SecurityTicker = security.Ticker,
-                        TriggeredPrice = security.CurrentPrice,
-                        TargetPrice = operation.TargetBuyPrice.Value,
+                        OperationId = t.op.Id,
+                        SecurityId = t.op.SecurityId,
+                        SecurityTicker = t.security?.Ticker ?? string.Empty,
+                        TriggeredPrice = t.security?.CurrentPrice ?? 0,
+                        TargetPrice = t.op.TargetBuyPrice ?? 0,
                         TriggeredAt = DateTime.Now
-                    });
+                    }).ToList();
 
-                    newlyActivatedTriggers.Add(new
-                    {
-                        OperationId = operation.Id,
-                        SecurityTicker = security.Ticker,
-                        SecurityName = security.Name,
-                        CurrentPrice = security.CurrentPrice,
-                        TargetPrice = operation.TargetBuyPrice.Value,
-                        Message = $"АВТО: Сработал триггер! {security.Ticker} достиг ${security.CurrentPrice}"
-                    });
-                }
+                newTriggers.ForEach(th => _triggerHistory.Add(th));
+                if (newTriggers.Any())
+                    Console.WriteLine($"Автоматически сработало триггеров: {newTriggers.Count}");
             }
-
-            if (newlyActivatedTriggers.Any())
+            catch (Exception ex)
             {
-                Console.WriteLine($" Автоматически сработало триггеров: {newlyActivatedTriggers.Count}");
+                Console.WriteLine($"Ошибка при проверке триггеров: {ex.Message}");
             }
         }
 
         [HttpGet("securities")]
         public ActionResult<IEnumerable<Security>> GetSecurities()
         {
-            Console.WriteLine(" Returning securities list");
-            return Ok(_securities);
+            lock (_securities)
+            {
+                return Ok(_securities);
+            }
         }
 
         [HttpGet("operations")]
         public ActionResult<IEnumerable<object>> GetOperations()
         {
-            var operationsWithDetails = _operations.Select(op =>
-            {
-                var security = _securities.FirstOrDefault(s => s.Id == op.SecurityId);
-                bool isTriggered = _triggerHistory.Any(th => th.OperationId == op.Id);
-
-                return new
-                {
-                    op.Id,
-                    op.SecurityId,
-                    SecurityTicker = security?.Ticker,
-                    SecurityName = security?.Name,
-                    op.Quantity,
-                    op.PurchasePricePerShare,
-                    op.Commission,
-                    op.TotalCost,
-                    op.TargetBuyPrice,
-                    op.NotificationEmail,
-                    HasTrigger = op.TargetBuyPrice.HasValue,
-                    IsTriggered = isTriggered,
-                    TriggeredAt = isTriggered ?
-                        _triggerHistory.First(th => th.OperationId == op.Id).TriggeredAt : (DateTime?)null
-                };
-            });
-            return Ok(operationsWithDetails);
+            lock (_securities)
+                lock (_operations)
+                    lock (_triggerHistory)
+                    {
+                        return Ok(_operations.Select(op =>
+                        {
+                            var security = _securities.FirstOrDefault(s => s.Id == op.SecurityId);
+                            var triggered = _triggerHistory.FirstOrDefault(th => th.OperationId == op.Id);
+                            return new
+                            {
+                                op.Id,
+                                op.SecurityId,
+                                SecurityTicker = security?.Ticker,
+                                op.Quantity,
+                                op.PurchasePricePerShare,
+                                op.Commission,
+                                op.TotalCost,
+                                op.TargetBuyPrice,
+                                op.NotificationEmail,
+                                IsTriggered = triggered != null,
+                                TriggeredAt = triggered?.TriggeredAt
+                            };
+                        }));
+                    }
         }
 
         [HttpPost("calculate")]
         public ActionResult<object> CalculateOperation([FromBody] CalculateRequest request)
         {
             if (request.Quantity <= 0 || request.PurchasePricePerShare <= 0 || request.Commission < 0)
-            {
                 return BadRequest("Некорректные данные для расчёта.");
-            }
 
-            // Создаем временную операцию для расчета
-            var tempOperation = new InvestmentOperation
+            var total = request.Quantity * request.PurchasePricePerShare + request.Commission;
+            return Ok(new
             {
-                SecurityId = request.SecurityId,
-                Quantity = request.Quantity,
-                PurchasePricePerShare = request.PurchasePricePerShare,
-                Commission = request.Commission,
-                TargetBuyPrice = request.TargetBuyPrice
-            };
-
-            var result = new
-            {
-                TotalCost = tempOperation.TotalCost, // Используем вычисляемое свойство
-                Quantity = tempOperation.Quantity,
-                PricePerShare = tempOperation.PurchasePricePerShare,
-                Commission = tempOperation.Commission,
-                HasTrigger = tempOperation.TargetBuyPrice.HasValue,
-                TriggerMessage = tempOperation.TargetBuyPrice.HasValue ?
-                    $"Триггер установлен на цену: ${tempOperation.TargetBuyPrice}" :
-                    "Триггер не установлен",
-                Details = $"Количество: {tempOperation.Quantity} × Цена: ${tempOperation.PurchasePricePerShare} = ${tempOperation.Quantity * tempOperation.PurchasePricePerShare} + Комиссия: ${tempOperation.Commission} = Итого: ${tempOperation.TotalCost}"
-            };
-
-            Console.WriteLine($" Расчет стоимости: {result.Details}");
-            return Ok(result);
+                TotalCost = total,
+                request.Quantity,
+                PricePerShare = request.PurchasePricePerShare,
+                request.Commission,
+                HasTrigger = request.TargetBuyPrice.HasValue,
+                TriggerMessage = request.TargetBuyPrice.HasValue ? $"Триггер установлен на цену: ${request.TargetBuyPrice}" : "Триггер не установлен",
+                Details = $"{request.Quantity} × ${request.PurchasePricePerShare} = ${request.Quantity * request.PurchasePricePerShare} + Комиссия: ${request.Commission} = ${total}"
+            });
         }
 
-        // Класс для запроса расчета
         public class CalculateRequest
         {
             public int SecurityId { get; set; }
@@ -210,178 +178,154 @@ namespace InvestmentApi.Controllers
         [HttpPost("operation")]
         public IActionResult AddOperation([FromBody] InvestmentOperation operation)
         {
-            var securityExists = _securities.Any(s => s.Id == operation.SecurityId);
-            if (!securityExists)
+            if (operation.NotificationEmail == null)
+                return BadRequest("Email для уведомлений обязателен.");
+
+            lock (_securities)
             {
-                return BadRequest("Ценная бумага с указанным ID не найдена.");
+                if (!_securities.Any(s => s.Id == operation.SecurityId))
+                    return BadRequest("Ценная бумага с указанным ID не найдена.");
             }
 
-            operation.Id = _operations.Any() ? _operations.Max(op => op.Id) + 1 : 1;
-            _operations.Add(operation);
-
-            var security = _securities.First(s => s.Id == operation.SecurityId);
-            string triggerMessage = "";
-            bool triggerActivated = false;
-            bool alreadyTriggered = _triggerHistory.Any(th => th.OperationId == operation.Id);
-
-            // Проверка триггера (только если еще не срабатывал)
-            if (operation.TargetBuyPrice.HasValue && !alreadyTriggered)
-            {
-                if (security.CurrentPrice <= operation.TargetBuyPrice.Value)
+            lock (_operations)
+                lock (_triggerHistory)
                 {
-                    triggerMessage = $" ВНИМАНИЕ: Триггер сработал сразу! Текущая цена ({security.CurrentPrice}) ниже целевой ({operation.TargetBuyPrice}).";
-                    triggerActivated = true;
+                    operation.Id = _operations.Any() ? _operations.Max(op => op.Id) + 1 : 1;
+                    _operations.Add(operation);
 
-                    _triggerHistory.Add(new TriggerHistory
+                    var security = _securities.First(s => s.Id == operation.SecurityId);
+                    var triggerMessage = "";
+                    var triggerActivated = false;
+
+                    if (operation.TargetBuyPrice.HasValue && !_triggerHistory.Any(th => th.OperationId == operation.Id))
                     {
-                        OperationId = operation.Id,
-                        SecurityId = operation.SecurityId,
-                        SecurityTicker = security.Ticker,
-                        TriggeredPrice = security.CurrentPrice,
-                        TargetPrice = operation.TargetBuyPrice.Value,
-                        TriggeredAt = DateTime.Now
+                        if (security.CurrentPrice <= operation.TargetBuyPrice.Value)
+                        {
+                            triggerMessage = $" ВНИМАНИЕ: Триггер сработал сразу! Текущая цена ({security.CurrentPrice}) ниже целевой ({operation.TargetBuyPrice}).";
+                            triggerActivated = true;
+                            _triggerHistory.Add(new TriggerHistory
+                            {
+                                OperationId = operation.Id,
+                                SecurityId = operation.SecurityId,
+                                SecurityTicker = security.Ticker,
+                                TriggeredPrice = security.CurrentPrice,
+                                TargetPrice = operation.TargetBuyPrice.Value,
+                                TriggeredAt = DateTime.Now
+                            });
+                        }
+                    }
+
+                    return CreatedAtAction(nameof(GetOperations), new { id = operation.Id }, new
+                    {
+                        Operation = operation,
+                        Message = "Операция успешно добавлена!" + triggerMessage,
+                        TriggerActivated = triggerActivated
                     });
                 }
-            }
-
-            var response = new
-            {
-                Operation = operation,
-                Message = "Операция успешно добавлена!" + triggerMessage,
-                TriggerActivated = triggerActivated,
-                AlreadyTriggered = alreadyTriggered
-            };
-
-            return CreatedAtAction(nameof(GetOperations), new { id = operation.Id }, response);
         }
 
         [HttpPost("check-all-triggers")]
-        public ActionResult<IEnumerable<object>> CheckAllTriggersForced()
+        public ActionResult<object> CheckAllTriggersForced()
         {
-            var activatedTriggers = new List<object>();
-
-            foreach (var operation in _operations.Where(op => op.TargetBuyPrice.HasValue))
-            {
-                bool alreadyTriggered = _triggerHistory.Any(th => th.OperationId == operation.Id);
-                if (alreadyTriggered) continue;
-
-                var security = _securities.FirstOrDefault(s => s.Id == operation.SecurityId);
-                if (security != null && security.CurrentPrice <= operation.TargetBuyPrice.Value)
-                {
-                    _triggerHistory.Add(new TriggerHistory
+            lock (_securities)
+                lock (_operations)
+                    lock (_triggerHistory)
                     {
-                        OperationId = operation.Id,
-                        SecurityId = operation.SecurityId,
-                        SecurityTicker = security.Ticker,
-                        TriggeredPrice = security.CurrentPrice,
-                        TargetPrice = operation.TargetBuyPrice.Value,
-                        TriggeredAt = DateTime.Now
-                    });
+                        var activatedTriggers = _operations
+                            .Where(op => op.TargetBuyPrice.HasValue && !_triggerHistory.Any(th => th.OperationId == op.Id))
+                            .Select(op => (op, security: _securities.FirstOrDefault(s => s.Id == op.SecurityId)))
+                            .Where(t => t.security?.CurrentPrice <= t.op.TargetBuyPrice)
+                            .Select(t => new
+                            {
+                                t.op.Id,
+                                SecurityTicker = t.security?.Ticker ?? string.Empty,
+                                CurrentPrice = t.security?.CurrentPrice ?? 0,
+                                TargetPrice = t.op.TargetBuyPrice ?? 0,
+                                Message = $"СРАБОТАЛ ТРИГГЕР! {t.security?.Ticker}"
+                            }).ToList();
 
-                    activatedTriggers.Add(new
-                    {
-                        OperationId = operation.Id,
-                        SecurityTicker = security.Ticker,
-                        SecurityName = security.Name,
-                        CurrentPrice = security.CurrentPrice,
-                        TargetPrice = operation.TargetBuyPrice.Value,
-                        Message = $"СРАБОТАЛ ТРИГГЕР! {security.Ticker}"
-                    });
-                }
-            }
+                        activatedTriggers.ForEach(t => _triggerHistory.Add(new TriggerHistory
+                        {
+                            OperationId = t.Id,
+                            SecurityId = _securities.First(s => s.Ticker == t.SecurityTicker).Id,
+                            SecurityTicker = t.SecurityTicker,
+                            TriggeredPrice = t.CurrentPrice,
+                            TargetPrice = t.TargetPrice,
+                            TriggeredAt = DateTime.Now
+                        }));
 
-            return Ok(new
-            {
-                CheckedAt = DateTime.Now,
-                ActivatedTriggers = activatedTriggers,
-                TotalChecked = _operations.Count(op => op.TargetBuyPrice.HasValue),
-                AlreadyTriggeredCount = _triggerHistory.Count
-            });
+                        return Ok(new
+                        {
+                            CheckedAt = DateTime.Now,
+                            ActivatedTriggers = activatedTriggers,
+                            TotalChecked = _operations.Count(op => op.TargetBuyPrice.HasValue)
+                        });
+                    }
         }
 
         [HttpGet("active-triggers")]
         public ActionResult<IEnumerable<object>> GetActiveTriggers()
         {
-            var activeTriggers = new List<object>();
-
-            foreach (var operation in _operations.Where(op => op.TargetBuyPrice.HasValue))
-            {
-                bool alreadyTriggered = _triggerHistory.Any(th => th.OperationId == operation.Id);
-                if (alreadyTriggered) continue;
-
-                var security = _securities.FirstOrDefault(s => s.Id == operation.SecurityId);
-                if (security != null && security.CurrentPrice > operation.TargetBuyPrice.Value)
-                {
-                    activeTriggers.Add(new
+            lock (_securities)
+                lock (_operations)
+                    lock (_triggerHistory)
                     {
-                        OperationId = operation.Id,
-                        SecurityTicker = security.Ticker,
-                        SecurityName = security.Name,
-                        CurrentPrice = security.CurrentPrice,
-                        TargetPrice = operation.TargetBuyPrice.Value,
-                        Message = $"Ожидаем падения {security.Ticker} до ${operation.TargetBuyPrice.Value}",
-                        DistancePercent = Math.Round(((security.CurrentPrice - operation.TargetBuyPrice.Value) / operation.TargetBuyPrice.Value * 100), 2),
-                        IsActive = true
-                    });
-                }
-            }
-
-            return Ok(activeTriggers);
+                        return Ok(
+                            _operations.Where(op => op.TargetBuyPrice.HasValue && !_triggerHistory.Any(th => th.OperationId == op.Id))
+                                .Select(op => (op, security: _securities.FirstOrDefault(s => s.Id == op.SecurityId)))
+                                .Where(t => t.security?.CurrentPrice > t.op.TargetBuyPrice)
+                                .Select(t => new
+                                {
+                                    t.op.Id,
+                                    SecurityTicker = t.security?.Ticker ?? string.Empty,
+                                    CurrentPrice = t.security?.CurrentPrice ?? 0,
+                                    TargetPrice = t.op.TargetBuyPrice ?? 0,
+                                    Message = $"Ожидаем падения {t.security?.Ticker} до ${t.op.TargetBuyPrice.Value}",
+                                    DistancePercent = t.op.TargetBuyPrice.HasValue ?
+                                        Math.Round(((t.security?.CurrentPrice ?? 0 - t.op.TargetBuyPrice.Value) / t.op.TargetBuyPrice.Value * 100), 2) : 0
+                                }));
+                    }
         }
 
         [HttpGet("trigger-history")]
         public ActionResult<IEnumerable<TriggerHistory>> GetTriggerHistory()
         {
-            // Возвращаем только необработанные триггеры
-            var unprocessedTriggers = _triggerHistory
-                .Where(t => !t.IsProcessed)
-                .ToList();
-
-            return Ok(unprocessedTriggers);
+            lock (_triggerHistory)
+            {
+                return Ok(_triggerHistory.Where(t => !t.IsProcessed));
+            }
         }
 
-        [HttpPost("mark-processed/{id}")]
-        public IActionResult MarkTriggerAsProcessed(int OperationId)
+        [HttpPost("mark-processed/{operationId}")]
+        public IActionResult MarkTriggerAsProcessed(int operationId)
         {
-            var trigger = _triggerHistory.FirstOrDefault(t => t.OperationId == OperationId);
-            if (trigger != null)
+            lock (_triggerHistory)
             {
+                var trigger = _triggerHistory.FirstOrDefault(t => t.OperationId == operationId);
+                if (trigger == null) return NotFound();
                 trigger.IsProcessed = true;
                 return Ok();
             }
-            return NotFound();
         }
 
         [HttpGet("current-prices")]
         public ActionResult<object> GetCurrentPrices()
         {
-            var prices = _securities.Select(s => new
+            lock (_securities)
             {
-                s.Id,
-                s.Ticker,
-                s.CurrentPrice,
-                PriceChange = Math.Round(s.CurrentPrice - s.BasePrice, 2),
-                PriceChangePercent = Math.Round((s.CurrentPrice - s.BasePrice) / s.BasePrice * 100, 2),
-                LastUpdated = DateTime.Now
-            });
-
-            return Ok(new
-            {
-                Prices = prices,
-                LastUpdate = DateTime.Now,
-                TotalSecurities = _securities.Count
-            });
+                return Ok(new
+                {
+                    Prices = _securities.Select(s => new
+                    {
+                        s.Id,
+                        s.Ticker,
+                        s.CurrentPrice,
+                        PriceChange = Math.Round(s.CurrentPrice - s.BasePrice, 2),
+                        PriceChangePercent = Math.Round((s.CurrentPrice - s.BasePrice) / s.BasePrice * 100, 2)
+                    }),
+                    LastUpdate = DateTime.Now
+                });
+            }
         }
     }
-}
-
-public class TriggerHistory
-{
-    public int OperationId { get; set; }
-    public int SecurityId { get; set; }
-    public string SecurityTicker { get; set; }
-    public decimal TriggeredPrice { get; set; }
-    public decimal TargetPrice { get; set; }
-    public DateTime TriggeredAt { get; set; }
-    public bool IsProcessed { get; set; } = false;
 }
