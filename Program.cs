@@ -1,10 +1,9 @@
+using Microsoft.OpenApi.Models;
+
 var builder = WebApplication.CreateBuilder(args);
 
 
 builder.Services.AddControllers();
-builder.Services.AddHttpClient();
-
-
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowAll", policy =>
@@ -17,7 +16,10 @@ builder.Services.AddCors(options =>
 
 
 builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen();
+builder.Services.AddSwaggerGen(c =>
+{
+    c.SwaggerDoc("v1", new OpenApiInfo { Title = "Investment API", Version = "v1" });
+});
 
 var app = builder.Build();
 
@@ -29,17 +31,10 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseHttpsRedirection();
-
-
 app.UseCors("AllowAll");
-
-
 app.UseStaticFiles();
-
 app.UseAuthorization();
 app.MapControllers();
-
-
 app.MapFallbackToFile("index.html");
 
 app.Run();
