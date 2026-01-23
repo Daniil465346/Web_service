@@ -87,6 +87,23 @@ Content-Type: application/json
     "commission": 5.00
 }
 
+Получение списка ценных бумаг
+
+GET /api/investment/securities
+
+Входные данные: отсутствуют
+
+Ответ:
+
+[
+  {
+    "id": 1,
+    "ticker": "AAPL",
+    "name": "Apple Inc.",
+    "currentPrice": 170.0
+  }
+]
+
 Получение текущих цен
 
 GET /api/investment/current-prices
